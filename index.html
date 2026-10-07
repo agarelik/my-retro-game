@@ -1,0 +1,599 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Pac-Kiro</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#0a0a0a;display:flex;flex-direction:column;align-items:center;
+         justify-content:center;min-height:100vh;
+         font-family:'Courier New',monospace;color:#fff}
+    h1{font-size:2.2rem;color:#790ECB;letter-spacing:.15em;margin-bottom:10px;
+       text-shadow:0 0 20px #790ECB88}
+    #hud{display:flex;justify-content:space-between;width:560px;padding:6px 4px;
+         font-size:1rem;color:#c084fc}
+    canvas{display:block;border:2px solid #790ECB;
+           box-shadow:0 0 30px #790ECB55,0 0 60px #790ECB22;background:#0a0a0a}
+    #msg{margin-top:10px;font-size:.85rem;color:#a78bfa;
+         letter-spacing:.08em;min-height:1.3em;text-align:center}
+  </style>
+</head>
+<body>
+<h1>PAC-KIRO</h1>
+<div id="hud">
+  <span>SCORE: <span id="sc">0</span></span>
+  <span>HI: <span id="hi">0</span></span>
+  <span>LIVES: <span id="lv">3</span></span>
+</div>
+<canvas id="c" width="560" height="560"></canvas>
+<div id="msg">Loading...</div>
+<script>
+// ── constants ────────────────────────────────────────────────────────────────
+const CELL=28,COLS=20,ROWS=20,W=560,H=560;
+const PS=8,GS=12;           // player speed, ghost speed (frames per move)
+const WALL=1,DOT=2,EMPTY=0,POWER=3;
+const S_START='start',S_PLAY='playing',S_OVER='gameOver',S_WIN='levelComplete';
+const GCOL=['#FF0000','#FFB8FF','#FFB852','#00FFFF'];
+
+// ── maze template ────────────────────────────────────────────────────────────
+const ORIG=[
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,2,2,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,1],
+  [1,3,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,3,1],
+  [1,2,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,2,1],
+  [1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],
+  [1,2,1,1,2,1,2,1,1,1,1,1,1,2,1,2,1,1,2,1],
+  [1,2,2,2,2,1,2,2,2,1,1,2,2,2,1,2,2,2,2,1],
+  [1,1,1,1,2,1,1,1,0,1,1,0,1,1,1,2,1,1,1,1],
+  [1,1,1,1,2,1,0,0,0,0,0,0,0,0,1,2,1,1,1,1],
+  [1,1,1,1,2,1,0,1,1,0,0,1,1,0,1,2,1,1,1,1],
+  [0,0,0,0,2,0,0,1,0,0,0,0,1,0,0,2,0,0,0,0],
+  [1,1,1,1,2,1,0,1,1,1,1,1,1,0,1,2,1,1,1,1],
+  [1,1,1,1,2,1,0,0,0,0,0,0,0,0,1,2,1,1,1,1],
+  [1,1,1,1,2,1,0,1,1,1,1,1,1,0,1,2,1,1,1,1],
+  [1,2,2,2,2,2,2,2,2,1,1,2,2,2,2,2,2,2,2,1],
+  [1,2,1,1,2,1,1,1,2,1,1,2,1,1,1,2,1,1,2,1],
+  [1,3,2,1,2,2,2,2,2,2,2,2,2,2,2,2,1,2,3,1],
+  [1,1,2,1,2,1,2,1,1,1,1,1,1,2,1,2,1,2,1,1],
+  [1,2,2,2,2,1,2,2,2,1,1,2,2,2,1,2,2,2,2,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+// ── ScoreManager (Task 1.1) ───────────────────────────────────────────────────
+const ScoreManager = {
+  hi: 0,
+  _labelTimer: 0,
+  _labelVisible: false,
+  _newHiTriggered: false,
+
+  load() {
+    try {
+      const raw = localStorage.getItem('pac-kiro-highscore');
+      if (raw === null) { this.hi = 0; return; }
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 0 || String(n) !== raw.trim()) {
+        this.hi = 0;
+        localStorage.setItem('pac-kiro-highscore', '0');
+      } else {
+        this.hi = n;
+      }
+    } catch(e) { this.hi = 0; }
+  },
+
+  check(currentScore) {
+    if (currentScore > this.hi) {
+      this.hi = currentScore;
+      try { localStorage.setItem('pac-kiro-highscore', String(this.hi)); } catch(e) {}
+      this._labelTimer = 3000;
+      this._labelVisible = true;
+      if (!this._newHiTriggered) {
+        this._newHiTriggered = true;
+        ParticleSystem.spawnConfetti();
+      }
+    }
+  },
+
+  hideLabel() {
+    this._labelTimer = 0;
+    this._labelVisible = false;
+  }
+};
+
+// ── ParticleSystem (Tasks 2.1, 4.1, 4.2, 4.3, 5.1) ──────────────────────────
+const ParticleSystem = {
+  pool: [],
+
+  update(dt) {
+    for (let i = 0; i < this.pool.length; i++) {
+      const p = this.pool[i];
+      p.age += dt;
+      // confetti: only dies when it falls off canvas bottom
+      if (p.type === 'confetti') {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.spin += p.spinSpeed;
+        if (p.y > H) p.dead = true;
+      } else {
+        p.alpha = Math.max(0, 1 - p.age / p.lifetime);
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.age >= p.lifetime) p.dead = true;
+      }
+    }
+    // filter dead particles
+    this.pool = this.pool.filter(p => !p.dead);
+  },
+
+  draw(ctx) {
+    if (!ctx) return;
+    for (let i = 0; i < this.pool.length; i++) {
+      const p = this.pool[i];
+      ctx.save();
+      if (p.type === 'trail') {
+        ctx.globalAlpha = Math.max(0, 0.6 * (1 - p.age / p.lifetime));
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+      } else if (p.type === 'explosion' || p.type === 'sparkle') {
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+      } else if (p.type === 'confetti') {
+        ctx.globalAlpha = 1;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.spin);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  },
+
+  // Task 4.1 — trail particles
+  spawnTrail(x, y) {
+    const count = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const mag = Math.random(); // 0..1 px/frame
+      this.pool.push({
+        type: 'trail',
+        x, y,
+        vx: Math.cos(angle) * mag,
+        vy: Math.sin(angle) * mag,
+        radius: 3 + Math.random() * 3, // 3..6
+        color: '#790ECB',
+        lifetime: 300,
+        age: 0,
+        alpha: 0.6,
+        dead: false
+      });
+    }
+  },
+
+  // Task 4.2 — explosion particles
+  spawnExplosion(x, y, scared) {
+    if (!cx) return;
+    const count = 12 + Math.floor(Math.random() * 9); // 12..20
+    const normalColors = ['#790ECB','#c084fc','#ef4444','#ffffff'];
+    const scaredColors = ['#790ECB','#c084fc','#a5f3fc'];
+    const colors = scared ? scaredColors : normalColors;
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 3; // 2..5
+      const lifetime = 300 + Math.random() * 300; // 300..600
+      this.pool.push({
+        type: 'explosion',
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        radius: 4 + Math.random() * 4, // 4..8
+        color: colors[Math.floor(Math.random() * colors.length)],
+        lifetime,
+        age: 0,
+        alpha: 1,
+        dead: false
+      });
+    }
+  },
+
+  // Task 4.3 — sparkle particles
+  spawnSparkle(x, y, isPower) {
+    const active = this.pool.filter(p => p.type === 'sparkle').length;
+    const count = isPower ? (8 + Math.floor(Math.random() * 5)) : (3 + Math.floor(Math.random() * 3));
+    const toSpawn = Math.min(count, Math.max(0, 100 - active));
+    for (let i = 0; i < toSpawn; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 1 + Math.random() * 2; // 1..3
+      this.pool.push({
+        type: 'sparkle',
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        radius: 2 + Math.random() * 3, // 2..5
+        color: '#c084fc',
+        lifetime: 400,
+        age: 0,
+        alpha: 1,
+        dead: false
+      });
+    }
+  },
+
+  // Task 5.1 — confetti burst
+  spawnConfetti() {
+    const count = 60 + Math.floor(Math.random() * 41); // 60..100
+    const colors = ['#790ECB','#c084fc','#ffffff','#a78bfa','#fbbf24'];
+    for (let i = 0; i < count; i++) {
+      this.pool.push({
+        type: 'confetti',
+        x: Math.random() * W,
+        y: 0,
+        vx: (Math.random() * 2) - 1,      // -1..1
+        vy: 2 + Math.random() * 3,          // 2..5
+        spin: Math.random() * Math.PI * 2,
+        spinSpeed: (Math.random() * 0.2) - 0.1, // -0.1..0.1
+        w: 6 + Math.floor(Math.random() * 5),   // 6..10
+        h: 4 + Math.floor(Math.random() * 4),   // 4..7
+        color: colors[Math.floor(Math.random() * colors.length)],
+        lifetime: Infinity,
+        age: 0,
+        alpha: 1,
+        dead: false
+      });
+    }
+  }
+};
+
+// ── state ────────────────────────────────────────────────────────────────────
+let maze,score,lives,totalDots,eaten,state,frame;
+let player,ghosts;
+let lastTime=0; // Task 2.2 — dt tracking
+
+const cv=document.getElementById('c');
+const cx=cv.getContext('2d');
+const scEl=document.getElementById('sc');
+const hiEl=document.getElementById('hi');  // Task 1.2
+const lvEl=document.getElementById('lv');
+const msgEl=document.getElementById('msg');
+
+// ── kiro image ────────────────────────────────────────────────────────────────
+const img=new Image();img.src='kiro-logo.png';
+let imgOk=false;img.onload=()=>imgOk=true;img.onerror=()=>imgOk=false;
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function copyMaze(){maze=ORIG.map(r=>[...r]);}
+function countDots(){totalDots=0;for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)if(maze[r][c]===DOT||maze[r][c]===POWER)totalDots++;}
+function wall(c,r){if(c<0||c>=COLS||r<0||r>=ROWS)return true;return maze[r][c]===WALL;}
+function hud(){
+  scEl.textContent=score;
+  lvEl.textContent=lives;
+  hiEl.textContent=ScoreManager.hi;  // Task 1.2
+}
+
+// ── spawn ─────────────────────────────────────────────────────────────────────
+function spawnPlayer(){
+  player={c:10,r:15,dc:0,dr:0,nc:0,nr:0,t:0,mouth:true,mt:0};
+}
+function spawnGhosts(){
+  ghosts=[
+    {c:9, r:9, dc:1, dr:0, t:0,col:GCOL[0],sc:0},
+    {c:10,r:9, dc:-1,dr:0, t:0,col:GCOL[1],sc:0},
+    {c:9, r:10,dc:0, dr:1, t:0,col:GCOL[2],sc:0},
+    {c:10,r:10,dc:0, dr:-1,t:0,col:GCOL[3],sc:0}
+  ];
+}
+
+// ── init / reset ──────────────────────────────────────────────────────────────
+function initGame(){
+  ScoreManager.load();                    // Task 1.1
+  ScoreManager._newHiTriggered = false;   // Task 1.1
+  copyMaze();countDots();
+  score=0;lives=3;eaten=0;frame=0;
+  spawnPlayer();spawnGhosts();hud();
+  state=S_START;
+  msgEl.textContent='Use arrow keys to move!  Press any arrow key to start';
+}
+
+function restartPositions(){
+  frame=0;
+  spawnPlayer();spawnGhosts();
+}
+
+function nextLevel(){
+  copyMaze();countDots();
+  eaten=0;frame=0;
+  spawnPlayer();spawnGhosts();hud();
+}
+
+// ── input ─────────────────────────────────────────────────────────────────────
+const DMAP={ArrowLeft:{c:-1,r:0},ArrowRight:{c:1,r:0},ArrowUp:{c:0,r:-1},ArrowDown:{c:0,r:1}};
+document.addEventListener('keydown',e=>{
+  const d=DMAP[e.key];if(!d)return;e.preventDefault();
+  if(state===S_START){player.nc=d.c;player.nr=d.r;state=S_PLAY;msgEl.textContent='';return;}
+  if(state===S_OVER){initGame();player.nc=d.c;player.nr=d.r;state=S_PLAY;msgEl.textContent='';return;}
+  if(state===S_WIN){nextLevel();player.nc=d.c;player.nr=d.r;state=S_PLAY;msgEl.textContent='';return;}
+  if(state===S_PLAY){player.nc=d.c;player.nr=d.r;}
+});
+
+// ── update player ─────────────────────────────────────────────────────────────
+function updatePlayer(){
+  player.t++;if(player.t<PS)return;player.t=0;
+  // try buffered direction
+  if(player.nc!==0||player.nr!==0){
+    if(!wall(player.c+player.nc,player.r+player.nr)){
+      player.dc=player.nc;player.dr=player.nr;
+    }
+  }
+  // move in current direction
+  const nc=player.c+player.dc,nr=player.r+player.dr;
+  if(!wall(nc,nr)){player.c=nc;player.r=nr;}
+  // tunnel wrap
+  if(player.c<0)player.c=COLS-1;if(player.c>=COLS)player.c=0;
+  // eat
+  const cell=maze[player.r][player.c];
+  const px=player.c*CELL+CELL/2,py=player.r*CELL+CELL/2;
+  if(cell===DOT){
+    maze[player.r][player.c]=EMPTY;score+=10;eaten++;hud();
+    ParticleSystem.spawnSparkle(px,py,false); // Task 4.3
+    ScoreManager.check(score);                // Task 1.1
+  } else if(cell===POWER){
+    maze[player.r][player.c]=EMPTY;score+=50;eaten++;hud();
+    ghosts.forEach(g=>g.sc=180);
+    ParticleSystem.spawnSparkle(px,py,true);  // Task 4.3
+    ScoreManager.check(score);                // Task 1.1
+  }
+  // trail particles (Task 4.1)
+  if(player.dc!==0||player.dr!==0){
+    ParticleSystem.spawnTrail(px,py);
+  }
+  // mouth anim
+  player.mt++;if(player.mt%6===0)player.mouth=!player.mouth;
+  // win?
+  if(eaten>=totalDots){state=S_WIN;msgEl.textContent='Level Complete!  Press any arrow key to continue';}
+}
+
+// ── update ghosts ─────────────────────────────────────────────────────────────
+const DIRS=[{c:1,r:0},{c:-1,r:0},{c:0,r:1},{c:0,r:-1}];
+function updateGhosts(){
+  ghosts.forEach(g=>{
+    g.t++;if(g.t<GS)return;g.t=0;
+    if(g.sc>0)g.sc--;
+    // valid moves: no reversing unless forced
+    const rev={c:-g.dc,r:-g.dr};
+    let opts=DIRS.filter(d=>{
+      if(d.c===rev.c&&d.r===rev.r)return false;
+      return !wall(g.c+d.c,g.r+d.r);
+    });
+    if(!opts.length)opts=DIRS.filter(d=>!wall(g.c+d.c,g.r+d.r));
+    if(!opts.length)return;
+    let chosen;
+    if(g.sc>0){
+      chosen=opts[Math.floor(Math.random()*opts.length)];
+    } else {
+      let best=Infinity;
+      opts.forEach(d=>{
+        const dist=Math.abs(g.c+d.c-player.c)+Math.abs(g.r+d.r-player.r);
+        if(dist<best){best=dist;chosen=d;}
+      });
+      // 20% random deviation so ghosts aren't perfectly deterministic
+      if(Math.random()<0.2)chosen=opts[Math.floor(Math.random()*opts.length)];
+    }
+    if(chosen){g.dc=chosen.c;g.dr=chosen.r;g.c+=chosen.c;g.r+=chosen.r;}
+    if(g.c<0)g.c=COLS-1;if(g.c>=COLS)g.c=0;
+  });
+}
+
+// ── collision ─────────────────────────────────────────────────────────────────
+function checkCollision(){
+  ghosts.forEach(g=>{
+    if(g.c===player.c&&g.r===player.r){
+      const gx=g.c*CELL+CELL/2,gy=g.r*CELL+CELL/2;
+      if(g.sc>0){
+        score+=200;
+        ParticleSystem.spawnExplosion(gx,gy,true); // Task 4.2 — scared ghost
+        g.c=9;g.r=10;g.sc=0;hud();
+        ScoreManager.check(score);
+      } else {
+        ParticleSystem.spawnExplosion(gx,gy,false); // Task 4.2 — lethal hit
+        loseLife();
+      }
+    }
+  });
+}
+function loseLife(){
+  lives--;hud();
+  if(lives<=0){
+    state=S_OVER;
+    ScoreManager.hideLabel();  // Task 2.2 — hide label on game over
+    msgEl.textContent='GAME OVER!  Press any arrow key to restart';
+  } else {
+    restartPositions();
+    msgEl.textContent='Lives: '+lives;
+    setTimeout(()=>{if(state===S_PLAY)msgEl.textContent='';},1500);
+  }
+}
+
+// ── draw ──────────────────────────────────────────────────────────────────────
+function drawMaze(){
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const x=c*CELL,y=r*CELL,v=maze[r][c];
+      if(v===WALL){
+        cx.fillStyle='#1a0a2e';cx.fillRect(x,y,CELL,CELL);
+        cx.strokeStyle='#790ECB';cx.lineWidth=1.5;
+        cx.strokeRect(x+.75,y+.75,CELL-1.5,CELL-1.5);
+      } else {
+        cx.fillStyle='#0a0a0a';cx.fillRect(x,y,CELL,CELL);
+        if(v===DOT){
+          cx.beginPath();cx.arc(x+CELL/2,y+CELL/2,3,0,Math.PI*2);
+          cx.fillStyle='#c084fc';cx.fill();
+        } else if(v===POWER){
+          const p=0.8+0.2*Math.sin(frame*.12);
+          cx.beginPath();cx.arc(x+CELL/2,y+CELL/2,6*p,0,Math.PI*2);
+          cx.fillStyle='#790ECB';cx.shadowColor='#790ECB';cx.shadowBlur=12;
+          cx.fill();cx.shadowBlur=0;
+        }
+      }
+    }
+  }
+}
+
+function drawPlayer(){
+  const px=player.c*CELL+CELL/2,py=player.r*CELL+CELL/2,r=CELL/2-2;
+  if(imgOk){
+    cx.save();cx.translate(px,py);
+    const ang=player.dc===-1?Math.PI:player.dr===-1?-Math.PI/2:player.dr===1?Math.PI/2:0;
+    cx.rotate(ang);
+    const mv=player.dc!==0||player.dr!==0;
+    const sx=mv?(player.mouth?1.06:0.94):1;
+    const sy=mv?(player.mouth?0.94:1.06):1;
+    cx.scale(sx,sy);
+    const sz=CELL-4;
+    cx.drawImage(img,-sz/2,-sz/2,sz,sz);
+    cx.restore();
+    // glow ring
+    cx.beginPath();cx.arc(px,py,r+1,0,Math.PI*2);
+    cx.strokeStyle='#790ECB';cx.lineWidth=1.5;
+    cx.shadowColor='#790ECB';cx.shadowBlur=10;cx.stroke();cx.shadowBlur=0;
+  } else {
+    // fallback: pac-man circle
+    const sa=player.mouth?0.25:0.05;
+    cx.beginPath();cx.moveTo(px,py);
+    cx.arc(px,py,r,sa*Math.PI,(2-sa)*Math.PI);
+    cx.closePath();cx.fillStyle='#790ECB';cx.fill();
+  }
+}
+
+function drawGhosts(){
+  ghosts.forEach(g=>{
+    const gx=g.c*CELL+CELL/2,gy=g.r*CELL+CELL/2,r=CELL/2-3;
+    const scared=g.sc>0;
+    cx.save();
+    // body
+    cx.beginPath();
+    cx.arc(gx,gy-2,r,Math.PI,0,false);
+    cx.lineTo(gx+r,gy+r);
+    const sw=(r*2)/3;
+    for(let i=0;i<3;i++){
+      const bx=gx+r-i*sw;
+      cx.quadraticCurveTo(bx-sw/4,gy+r+5,bx-sw/2,gy+r);
+      cx.quadraticCurveTo(bx-sw*3/4,gy+r-5,bx-sw,gy+r);
+    }
+    cx.closePath();
+    cx.fillStyle=scared?'#3730a3':g.col;
+    cx.shadowColor=scared?'#818cf8':g.col;cx.shadowBlur=8;
+    cx.fill();cx.shadowBlur=0;
+    if(!scared){
+      // white eye sockets
+      [[-1,1]].forEach(_=>{
+        cx.beginPath();cx.ellipse(gx-r*.35,gy-r*.2,r*.28,r*.32,0,0,Math.PI*2);cx.fillStyle='#fff';cx.fill();
+        cx.beginPath();cx.ellipse(gx+r*.35,gy-r*.2,r*.28,r*.32,0,0,Math.PI*2);cx.fillStyle='#fff';cx.fill();
+      });
+      // pupils follow direction
+      cx.beginPath();cx.arc(gx-r*.35+g.dc*2,gy-r*.2+g.dr*2,r*.14,0,Math.PI*2);cx.fillStyle='#1e40af';cx.fill();
+      cx.beginPath();cx.arc(gx+r*.35+g.dc*2,gy-r*.2+g.dr*2,r*.14,0,Math.PI*2);cx.fillStyle='#1e40af';cx.fill();
+    } else {
+      // scared wavy mouth
+      cx.beginPath();
+      cx.moveTo(gx-r*.4,gy+r*.1);cx.lineTo(gx-r*.2,gy-r*.1);
+      cx.lineTo(gx,gy+r*.1);cx.lineTo(gx+r*.2,gy-r*.1);cx.lineTo(gx+r*.4,gy+r*.1);
+      cx.strokeStyle='#a5f3fc';cx.lineWidth=1.5;cx.stroke();
+    }
+    cx.restore();
+  });
+}
+
+// Task 5.2 — NEW HIGH SCORE! blinking label
+function drawHiScoreLabel(ctx){
+  if(!ScoreManager._labelVisible)return;
+  // blink: on when floor(timer/500)%2 === 1
+  const phase=Math.floor(ScoreManager._labelTimer/500)%2;
+  if(phase!==1)return;
+  ctx.save();
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.font='bold 22px "Courier New"';
+  ctx.fillStyle='#fbbf24';
+  ctx.shadowColor='#fbbf24';
+  ctx.shadowBlur=16;
+  ctx.fillText('NEW HIGH SCORE!',W/2,40);
+  ctx.shadowBlur=0;
+  ctx.restore();
+}
+
+function drawStartScreen(){
+  cx.fillStyle='rgba(0,0,0,0.78)';cx.fillRect(0,0,W,H);
+  cx.textAlign='center';cx.textBaseline='middle';
+  cx.font='bold 44px "Courier New"';cx.fillStyle='#790ECB';
+  cx.shadowColor='#790ECB';cx.shadowBlur=24;
+  cx.fillText('PAC-KIRO',W/2,H/2-80);cx.shadowBlur=0;
+  if(imgOk)cx.drawImage(img,W/2-32,H/2-32,64,64);
+  if(Math.floor(frame/28)%2===0){
+    cx.font='15px "Courier New"';cx.fillStyle='#c084fc';
+    cx.fillText('Use arrow keys to move!',W/2,H/2+60);
+    cx.fillText('Press any arrow key to start',W/2,H/2+84);
+  }
+  cx.textAlign='left';cx.textBaseline='alphabetic';
+}
+
+function drawOverlay(line1,line2,col){
+  cx.fillStyle='rgba(0,0,0,0.78)';cx.fillRect(0,0,W,H);
+  cx.textAlign='center';cx.textBaseline='middle';
+  cx.font='bold 38px "Courier New"';cx.fillStyle=col;
+  cx.shadowColor=col;cx.shadowBlur=22;
+  cx.fillText(line1,W/2,H/2-32);cx.shadowBlur=0;
+  if(Math.floor(frame/28)%2===0){
+    cx.font='15px "Courier New"';cx.fillStyle='#a78bfa';
+    cx.fillText(line2,W/2,H/2+18);
+  }
+  cx.textAlign='left';cx.textBaseline='alphabetic';
+}
+
+// ── game loop (Task 2.2) ──────────────────────────────────────────────────────
+function loop(timestamp){
+  // dt-capped delta (max 100ms prevents particle jumps when tab is backgrounded)
+  const dt=Math.min(timestamp-lastTime,100);
+  lastTime=timestamp;
+  frame++;
+
+  cx.clearRect(0,0,W,H);
+  drawMaze();
+
+  if(state===S_PLAY){
+    updatePlayer();
+    updateGhosts();
+    checkCollision();
+    ParticleSystem.update(dt);            // Task 2.2
+    // update hi-score label timer
+    if(ScoreManager._labelVisible){
+      ScoreManager._labelTimer-=dt;
+      if(ScoreManager._labelTimer<=0)ScoreManager.hideLabel();
+    }
+  }
+
+  drawPlayer();
+  drawGhosts();
+  ParticleSystem.draw(cx);               // Task 2.2 — after ghosts, before overlays
+  drawHiScoreLabel(cx);                  // Task 5.2
+
+  if(state===S_START) drawStartScreen();
+  else if(state===S_OVER){
+    drawOverlay('GAME OVER','Press any arrow key to restart','#ef4444');
+  } else if(state===S_WIN){
+    ScoreManager.hideLabel();             // Task 2.2 — hide on win
+    drawOverlay('LEVEL COMPLETE!','Press any arrow key to continue','#790ECB');
+  }
+
+  requestAnimationFrame(loop);
+}
+
+initGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
